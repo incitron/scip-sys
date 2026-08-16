@@ -190,8 +190,9 @@ jobs:
           cargo t create
           cargo t --examples
 
-  # Verifies the build script finds a SCIP install under `lib64` (CMake's
-  # GNUInstallDirs default on 64-bit RHEL/Fedora/SUSE-like systems). The prebuilt
+  # Verifies the build script finds and statically links a SCIP + SoPlex install
+  # under `lib64` (CMake's GNUInstallDirs default on 64-bit
+  # RHEL/Fedora/SUSE-like systems). The prebuilt
   # bundled libraries are re-laid into a `lib64` prefix that SCIPOPTDIR points at.
   # A bogus `lib/libscip*` is planted as well, so the job also fails if `lib`
   # (where 32-bit libraries live on multilib systems) is preferred over `lib64`.

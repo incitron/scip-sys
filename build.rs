@@ -95,7 +95,7 @@ fn emit_dynamic_scip_link_libs() {
 }
 
 /// Emit the link directives for a static SCIP + SoPlex installation.
-#[cfg(any(feature = "bundled", feature = "from-source"))]
+#[cfg(any(feature = "bundled", feature = "bindgen"))]
 fn emit_static_scip_link_libs() {
     #[cfg(windows)]
     {
@@ -113,6 +113,65 @@ fn emit_static_scip_link_libs() {
         println!("cargo:rustc-link-lib=dylib=c++");
     } else if target.contains("linux") || target.contains("pc-windows-gnu") {
         println!("cargo:rustc-link-lib=dylib=stdc++");
+    }
+}
+
+#[derive(Clone, Copy)]
+#[cfg(all(feature = "bindgen", not(feature = "bundled")))]
+enum ScipLinkMode {
+    Dynamic,
+    Static,
+}
+
+/// Determine whether an explicitly configured SCIP prefix contains a static
+/// SCIP + SoPlex installation rather than a shared SCIP library.
+#[cfg(all(feature = "bindgen", not(feature = "bundled")))]
+fn scip_link_mode(prefix: &str) -> ScipLinkMode {
+    let lib_dir = find_scip_lib_dir(prefix).unwrap_or_else(|| {
+        panic!(
+            "no SCIP library found under {prefix}/lib or {prefix}/lib64, \
+             please check your SCIP installation"
+        )
+    });
+
+    let static_archives: &[&str] = if cfg!(windows) {
+        &["libscip.lib", "libsoplex.lib"]
+    } else {
+        &["libscip.a", "libsoplex.a"]
+    };
+    let has_static_archives = static_archives
+        .iter()
+        .all(|name| lib_dir.join(name).is_file());
+
+    let has_shared_scip = std::fs::read_dir(&lib_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .any(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy().to_ascii_lowercase();
+            name.contains("scip")
+                && (name.ends_with(".dylib")
+                    || name.ends_with(".dll")
+                    || name.ends_with(".so")
+                    || name.contains(".so."))
+        })
+        || (cfg!(windows)
+            && Path::new(prefix)
+                .join("bin")
+                .read_dir()
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .any(|entry| {
+                    let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                    name.contains("scip") && name.ends_with(".dll")
+                }));
+
+    if has_static_archives && !has_shared_scip {
+        ScipLinkMode::Static
+    } else {
+        ScipLinkMode::Dynamic
     }
 }
 
@@ -237,7 +296,7 @@ fn lib_scip_in_dir(path: &str) -> bool {
 }
 
 #[cfg(all(feature = "bindgen", not(feature = "bundled")))]
-fn look_in_scipoptdir_and_conda_env() -> Option<bindgen::Builder> {
+fn look_in_scipoptdir_and_conda_env() -> Option<(bindgen::Builder, ScipLinkMode)> {
     let env_vars = vec!["SCIPOPTDIR", "CONDA_PREFIX"];
 
     for env_var_name in env_vars {
@@ -247,8 +306,11 @@ fn look_in_scipoptdir_and_conda_env() -> Option<bindgen::Builder> {
             println!("cargo:warning=Looking for SCIP in {}", scip_dir);
             if lib_scip_in_dir(&scip_dir) {
                 emit_link_search(&scip_dir);
-                emit_rpath(&scip_dir);
-                return Some(scip_dir_bindgen_builder(&scip_dir));
+                let link_mode = scip_link_mode(&scip_dir);
+                if matches!(link_mode, ScipLinkMode::Dynamic) {
+                    emit_rpath(&scip_dir);
+                }
+                return Some((scip_dir_bindgen_builder(&scip_dir), link_mode));
             } else {
                 println!("cargo:warning=SCIP was not found in {}", scip_dir);
             }
@@ -390,17 +452,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         use crate::from_source::is_from_source_feature_enabled;
 
         let from_source = is_from_source_feature_enabled();
-        let builder = if from_source {
+        let (builder, link_mode) = if from_source {
             let source_path = crate::from_source::download_scip_source();
             let build_path = crate::from_source::compile_scip(source_path);
             emit_link_search(build_path.to_str().unwrap());
-            scip_dir_bindgen_builder(build_path.to_str().unwrap())
+            (
+                scip_dir_bindgen_builder(build_path.to_str().unwrap()),
+                ScipLinkMode::Static,
+            )
         } else {
             look_in_scipoptdir_and_conda_env().unwrap_or_else(|| {
                 println!("cargo:warning=SCIP was not found in SCIPOPTDIR or in Conda environment");
                 println!("cargo:warning=Looking for SCIP in system libraries");
 
-                try_system_include_paths().unwrap_or_else(|| {
+                let builder = try_system_include_paths().unwrap_or_else(|| {
                     panic!(
                         "Could not find SCIP installation.\n\
                         Please either:\n\
@@ -409,15 +474,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                         - Use --features bundled to download and use a bundled version\n\
                         - Use --features from-source to build SCIP from source"
                     )
-                })
+                });
+                (builder, ScipLinkMode::Dynamic)
             })
         };
 
-        if from_source {
-            #[cfg(feature = "from-source")]
-            emit_static_scip_link_libs();
-        } else {
-            emit_dynamic_scip_link_libs();
+        match link_mode {
+            ScipLinkMode::Static => emit_static_scip_link_libs(),
+            ScipLinkMode::Dynamic => emit_dynamic_scip_link_libs(),
         }
         finalize_and_generate(builder, &out_path)?;
         return Ok(());

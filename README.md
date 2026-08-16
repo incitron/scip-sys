@@ -13,6 +13,9 @@ Meant to provide full control over SCIP's API, for a more restricted memory-safe
 ## Dependencies
 This crate links SCIP at build time and provides optional features ([bundled](#bundled-feature), [from-source](#from-source-feature)) to obtain it.
 If no feature is enabled, it will look for a scip installation in the current conda environment, if it is not found it will look for the `SCIPOPTDIR` environment variable.
+`SCIPOPTDIR` may point to either a shared SCIP installation or a static SCIP +
+SoPlex installation. Static installations must provide both archives in `lib`
+or `lib64`; `scip-sys` links the platform C++ runtime for them automatically.
 to install SCIP using conda run the following command
 ```bash
 conda install --channel conda-forge scip

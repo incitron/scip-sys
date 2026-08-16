@@ -46112,26 +46112,6 @@ pub struct SCIP_DebugSolData {
 }
 #[doc = " solution data for debugging purposes"]
 pub type SCIP_DEBUGSOLDATA = SCIP_DebugSolData;
-unsafe extern "C" {
-    pub fn SCIPcheckStage(
-        scip: *mut SCIP,
-        method: *const ::std::os::raw::c_char,
-        init: ::std::os::raw::c_uint,
-        problem: ::std::os::raw::c_uint,
-        transforming: ::std::os::raw::c_uint,
-        transformed: ::std::os::raw::c_uint,
-        initpresolve: ::std::os::raw::c_uint,
-        presolving: ::std::os::raw::c_uint,
-        exitpresolve: ::std::os::raw::c_uint,
-        presolved: ::std::os::raw::c_uint,
-        initsolve: ::std::os::raw::c_uint,
-        solving: ::std::os::raw::c_uint,
-        solved: ::std::os::raw::c_uint,
-        exitsolve: ::std::os::raw::c_uint,
-        freetrans: ::std::os::raw::c_uint,
-        freescip: ::std::os::raw::c_uint,
-    ) -> SCIP_RETCODE;
-}
 #[doc = " global SCIP settings"]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
