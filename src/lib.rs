@@ -5,6 +5,9 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 #![allow(improper_ctypes)]
+// Bindgen emits literal C constants, bitfield helpers, and raw unsafe APIs that
+// intentionally do not follow handwritten Rust clippy conventions.
+#![allow(clippy::all)]
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 

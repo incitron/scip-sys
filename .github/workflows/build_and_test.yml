@@ -22,14 +22,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v3
-      - name: Install GCC (provides libgfortran for the prebuilt SCIP binary)
-        if: ${{ matrix.os == 'macos-15' || matrix.os == 'macos-14' }}
-        run: brew install gcc
       - name: Test bundled
         run: |
-          cargo b --features bundled --release
-          cargo t --features bundled --release create
-          cargo t --features bundled --release --examples
+          cargo b --no-default-features --features bundled --release
+          cargo t --no-default-features --features bundled --release create
+          cargo run --no-default-features --features bundled --release --example create
 
   # Exercises the lean path: --no-default-features drops bindgen + libclang and
   # uses the committed prebuilt bindings. Skips platforms whose bindings have not
@@ -65,7 +62,7 @@ jobs:
           fi
           cargo b --no-default-features --features bundled --release
           cargo t --no-default-features --features bundled --release create
-          cargo t --no-default-features --features bundled --release --examples
+          cargo run --no-default-features --features bundled --release --example create
 
   # Verifies the committed prebuilt bindings still match what bindgen produces on
   # each platform, so they cannot silently drift from the pinned SCIP release.
@@ -139,10 +136,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v3
-      - name: Install bison
-        if: ${{ matrix.os == 'macos-15' || matrix.os == 'macos-14' }}
-        run: |
-          brew install bison gcc
       - name: Test from-source
         run: |
           cargo b --features from-source -vv
@@ -204,8 +197,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Install runtime dependency of the prebuilt SCIP
-        run: sudo apt-get update && sudo apt-get install -y libgfortran5
       - name: Lay out a lib64-style SCIP install from the bundled prebuilt
         run: |
           cargo build --features bundled --release

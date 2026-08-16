@@ -1,5 +1,5 @@
 #[cfg(feature = "bundled")]
-use crate::download::download_and_extract_zip;
+use crate::download::{download_and_extract_zip, extract_zip_file};
 #[cfg(feature = "bundled")]
 use std::env;
 #[cfg(feature = "bundled")]
@@ -35,10 +35,43 @@ pub fn target_string() -> String {
 #[cfg(feature = "bundled")]
 pub fn download_scip() {
     let extract_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+    println!("cargo:rerun-if-env-changed=SCIP_SYS_BUNDLE_PATH");
 
-    if extract_path.join("scip_install").exists() {
+    let local_bundle = env::var_os("SCIP_SYS_BUNDLE_PATH").map(PathBuf::from);
+    let bundle_source = match &local_bundle {
+        Some(path) => {
+            if !path.is_absolute() {
+                panic!(
+                    "SCIP_SYS_BUNDLE_PATH must be an absolute path: {}",
+                    path.display()
+                );
+            }
+            println!("cargo:rerun-if-changed={}", path.display());
+            format!("file:{}", path.display())
+        }
+        None => format!(
+            "https://github.com/incitron/scip-sys/releases/download/\
+             kessel-scip-10.0.2-r1/libscip-{}.zip",
+            target_string()
+        ),
+    };
+    let source_marker = extract_path.join("scip-bundle-source.txt");
+    let installed = extract_path.join("scip_install");
+    let source_matches = std::fs::read_to_string(&source_marker)
+        .map(|source| source == bundle_source)
+        .unwrap_or(false);
+
+    if installed.exists() && source_matches && local_bundle.is_none() {
         println!("cargo:warning=SCIP was previously downloaded, skipping download");
         return;
+    }
+    if installed.exists() {
+        std::fs::remove_dir_all(&installed).unwrap_or_else(|error| {
+            panic!(
+                "failed to remove stale SCIP bundle at {}: {error}",
+                installed.display()
+            )
+        });
     }
 
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
@@ -46,25 +79,21 @@ pub fn download_scip() {
     println!("cargo:warning=Detected OS: {}", os);
     println!("cargo:warning=Detected arch: {}", arch);
 
-    let os_string = target_string();
+    let result = match local_bundle {
+        Some(path) => {
+            println!("cargo:warning=Using local SCIP bundle {}", path.display());
+            extract_zip_file(&path, &extract_path)
+        }
+        None => download_and_extract_zip(&bundle_source, &extract_path),
+    };
+    result.unwrap_or_else(|error| panic!("Failed to obtain SCIP bundle: {error}"));
 
-    // if debug mode is enabled, download the debug version of SCIP
-    #[cfg(debug_assertions)]
-    let debug_str = "-debug";
-    #[cfg(not(debug_assertions))]
-    let debug_str = "";
-    // Only consumed by the (currently disabled) debug-build URL below.
-    let _ = debug_str;
-
-    // TODO: enable this when debug builds are available
-    // let url = format!(
-    //     "https://github.com/scipopt/scipoptsuite-deploy/releases/download/v0.12.0/libscip-{os_string}{debug_str}.zip",
-    // );
-    // v0.12.0 ships SCIP 10.0.2 / SoPlex 8.0.2 / GCG 4.0.2 / IPOPT 3.14.19.
-    let url = format!(
-        "https://github.com/scipopt/scipoptsuite-deploy/releases/download/v0.12.0/libscip-{os_string}.zip",
-    );
-
-    download_and_extract_zip(&url, &extract_path)
-        .unwrap_or_else(|e| panic!("Failed to download and extract SCIP: {}", e));
+    if !installed.exists() {
+        panic!(
+            "SCIP bundle did not contain the expected scip_install directory: {}",
+            installed.display()
+        );
+    }
+    std::fs::write(source_marker, bundle_source)
+        .unwrap_or_else(|error| panic!("failed to record SCIP bundle source: {error}"));
 }

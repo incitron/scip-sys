@@ -16,9 +16,6 @@ use std::env;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
-/// Emit the `cargo:` link-search / rpath directives for a SCIP install directory
-/// (one containing `lib/` and `include/`). This is independent of bindgen and is
-/// shared by every path that links against SCIP.
 /// Locate the directory under a SCIP install prefix that actually contains the
 /// SCIP libraries. CMake's GNUInstallDirs installs into `lib64` on many 64-bit
 /// Linux distributions (RHEL/Fedora/SUSE/...) and into `lib` elsewhere, so probe
@@ -37,7 +34,7 @@ fn find_scip_lib_dir(prefix: &str) -> Option<PathBuf> {
         &["lib"]
     };
     candidates
-        .into_iter()
+        .iter()
         .map(|sub| PathBuf::from(prefix).join(sub))
         .find(|dir| {
             glob(&format!("{}/libscip*", dir.display()))
@@ -65,14 +62,28 @@ fn emit_link_search(path: &str) {
         let bin_dir = PathBuf::from(&path).join("bin");
         println!("cargo:rustc-link-search={}", bin_dir.to_str().unwrap());
     }
-
-    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir_path);
 }
 
-/// Emit the `cargo:` link-lib directives: the SCIP library itself, plus the C++
-/// runtime and SoPlex when building from source.
-#[cfg(any(feature = "bundled", feature = "bindgen"))]
-fn emit_link_libs() {
+/// Emit an rpath only for a dynamically linked SCIP installation.
+#[cfg(all(feature = "bindgen", not(feature = "bundled")))]
+fn emit_rpath(path: &str) {
+    #[cfg(not(windows))]
+    {
+        let lib_dir = find_scip_lib_dir(path).unwrap_or_else(|| {
+            panic!(
+                "no SCIP library found under {path}/lib or {path}/lib64, \
+             please check your SCIP installation"
+            )
+        });
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
+    }
+    #[cfg(windows)]
+    let _ = path;
+}
+
+/// Emit the link directives for a normal dynamic SCIP installation.
+#[cfg(all(feature = "bindgen", not(feature = "bundled")))]
+fn emit_dynamic_scip_link_libs() {
     #[cfg(windows)]
     {
         println!("cargo:rustc-link-lib=libscip");
@@ -81,28 +92,80 @@ fn emit_link_libs() {
     {
         println!("cargo:rustc-link-lib=scip");
     }
+}
 
-    #[cfg(feature = "from-source")]
+/// Emit the link directives for a static SCIP + SoPlex installation.
+#[cfg(any(feature = "bundled", feature = "from-source"))]
+fn emit_static_scip_link_libs() {
+    #[cfg(windows)]
     {
-        let target = env::var("TARGET").unwrap();
-        let apple = target.contains("apple");
-        let linux = target.contains("linux");
-        let mingw = target.contains("pc-windows-gnu");
-        if apple {
-            println!("cargo:rustc-link-lib=dylib=c++");
-        } else if linux || mingw {
-            println!("cargo:rustc-link-lib=dylib=stdc++");
-        }
+        println!("cargo:rustc-link-lib=static=libscip");
+        println!("cargo:rustc-link-lib=static=libsoplex");
+    }
+    #[cfg(not(windows))]
+    {
+        println!("cargo:rustc-link-lib=static=scip");
+        println!("cargo:rustc-link-lib=static=soplex");
+    }
 
-        #[cfg(windows)]
-        {
-            println!("cargo:rustc-link-lib=libsoplex");
-        }
-        #[cfg(not(windows))]
-        {
-            println!("cargo:rustc-link-lib=soplex");
+    let target = env::var("TARGET").unwrap();
+    if target.contains("apple") {
+        println!("cargo:rustc-link-lib=dylib=c++");
+    } else if target.contains("linux") || target.contains("pc-windows-gnu") {
+        println!("cargo:rustc-link-lib=dylib=stdc++");
+    }
+}
+
+#[cfg(feature = "bundled")]
+fn validate_static_bundle(prefix: &Path) -> Result<(), Box<dyn Error>> {
+    let lib_dir = find_scip_lib_dir(prefix.to_str().unwrap()).ok_or_else(|| {
+        format!(
+            "static SCIP bundle contains no SCIP archive under {}/lib",
+            prefix.display()
+        )
+    })?;
+    let expected: &[&str] = if cfg!(windows) {
+        &["libscip.lib", "libsoplex.lib"]
+    } else {
+        &["libscip.a", "libsoplex.a"]
+    };
+    for name in expected {
+        let archive = lib_dir.join(name);
+        if !archive.is_file() {
+            return Err(format!(
+                "static SCIP bundle is missing expected archive {}",
+                archive.display()
+            )
+            .into());
         }
     }
+
+    let mut directories = vec![prefix.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(directory)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                directories.push(path);
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            let is_dynamic = name.ends_with(".dylib")
+                || name.ends_with(".dll")
+                || name.ends_with(".so")
+                || name.contains(".so.");
+            if is_dynamic {
+                return Err(format!(
+                    "static SCIP bundle unexpectedly contains dynamic library {}",
+                    path.display()
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Build a bindgen `Builder` pointed at the SCIP headers inside an install
@@ -184,6 +247,7 @@ fn look_in_scipoptdir_and_conda_env() -> Option<bindgen::Builder> {
             println!("cargo:warning=Looking for SCIP in {}", scip_dir);
             if lib_scip_in_dir(&scip_dir) {
                 emit_link_search(&scip_dir);
+                emit_rpath(&scip_dir);
                 return Some(scip_dir_bindgen_builder(&scip_dir));
             } else {
                 println!("cargo:warning=SCIP was not found in {}", scip_dir);
@@ -272,7 +336,6 @@ fn write_bundled_bindings(scip_install: &Path, out_path: &Path) -> Result<(), Bo
                  Run the generate-bindings workflow and commit src/bindings/{target}.rs to skip this."
             );
         }
-
         let builder = scip_dir_bindgen_builder(scip_install.to_str().unwrap());
         finalize_and_generate(builder, out_path)?;
 
@@ -296,6 +359,7 @@ fn write_bundled_bindings(scip_install: &Path, out_path: &Path) -> Result<(), Bo
     }
 }
 
+#[allow(clippy::needless_return)]
 fn main() -> Result<(), Box<dyn Error>> {
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
 
@@ -312,8 +376,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     {
         bundled::download_scip();
         let path = out_path.join("scip_install");
+        validate_static_bundle(&path)?;
         emit_link_search(path.to_str().unwrap());
-        emit_link_libs();
+        emit_static_scip_link_libs();
         write_bundled_bindings(&path, &out_path)?;
         return Ok(());
     }
@@ -324,7 +389,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     {
         use crate::from_source::is_from_source_feature_enabled;
 
-        let builder = if is_from_source_feature_enabled() {
+        let from_source = is_from_source_feature_enabled();
+        let builder = if from_source {
             let source_path = crate::from_source::download_scip_source();
             let build_path = crate::from_source::compile_scip(source_path);
             emit_link_search(build_path.to_str().unwrap());
@@ -347,7 +413,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             })
         };
 
-        emit_link_libs();
+        if from_source {
+            #[cfg(feature = "from-source")]
+            emit_static_scip_link_libs();
+        } else {
+            emit_dynamic_scip_link_libs();
+        }
         finalize_and_generate(builder, &out_path)?;
         return Ok(());
     }

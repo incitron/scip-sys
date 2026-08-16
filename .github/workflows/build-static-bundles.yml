@@ -1,0 +1,177 @@
+name: build-static-bundles
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish all bundles after every platform passes
+        required: true
+        default: false
+        type: boolean
+      release_tag:
+        description: Immutable release tag
+        required: true
+        default: kessel-scip-10.0.2-r1
+        type: string
+  pull_request:
+    paths:
+      - .github/workflows/build-static-bundles.yml
+      - scripts/build_static_bundle.py
+      - build.rs
+      - bundled.rs
+      - download.rs
+      - Cargo.toml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux
+            runner: ubuntu-24.04
+          - target: linux-arm
+            runner: ubuntu-24.04-arm
+          - target: macos-intel
+            runner: macos-15-intel
+          - target: macos-arm
+            runner: macos-14
+          - target: windows
+            runner: windows-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Verify native toolchain
+        shell: bash
+        run: |
+          python --version
+          cmake --version
+          ninja --version
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            where.exe cl.exe
+          else
+            cc --version
+            c++ --version
+          fi
+      - name: Build static bundle
+        shell: bash
+        run: python scripts/build_static_bundle.py "${{ matrix.target }}" --output-dir dist
+      - name: Inspect and audit bundle contents
+        shell: python
+        run: |
+          from pathlib import Path
+          import zipfile
+
+          target = "${{ matrix.target }}"
+          archive = Path("dist") / f"libscip-{target}.zip"
+          with zipfile.ZipFile(archive) as bundle:
+              names = bundle.namelist()
+          print("\n".join(names))
+          lower = [name.lower() for name in names]
+          if target == "windows":
+              required = (("libscip.lib",), ("libsoplex.lib",))
+          else:
+              required = (("libscip.a",), ("libsoplex.a",))
+          for alternatives in required:
+              if not any(name.endswith(alternatives) for name in lower):
+                  raise SystemExit(f"missing static archive: {alternatives}")
+          forbidden = [
+              name for name in lower
+              if name.endswith((".dylib", ".dll", ".so")) or ".so." in name
+          ]
+          if forbidden:
+              raise SystemExit("dynamic libraries in bundle: " + ", ".join(forbidden))
+      - name: Build, test, and solve through scip-sys
+        shell: bash
+        env:
+          SCIP_SYS_BUNDLE_PATH: ${{ github.workspace }}/dist/libscip-${{ matrix.target }}.zip
+        run: |
+          cargo build --release --no-default-features --features bundled
+          cargo test --release --no-default-features --features bundled
+          cargo run --release --no-default-features --features bundled --example create
+      - name: Audit runtime dependencies (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          executable=target/release/examples/create
+          ldd "$executable" | tee runtime-dependencies.txt
+          readelf -d "$executable" | tee -a runtime-dependencies.txt
+          if rg -i 'libscip\.so|libsoplex\.so|libgfortran\.so|libquadmath\.so|libipopt\.so|libcoinmumps\.so' runtime-dependencies.txt; then
+            exit 1
+          fi
+      - name: Audit runtime dependencies (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          executable=target/release/examples/create
+          otool -L "$executable" | tee runtime-dependencies.txt
+          if rg -i 'libscip|libsoplex|libgfortran|libquadmath|libipopt|coinmumps|/opt/homebrew|/usr/local/opt' runtime-dependencies.txt; then
+            exit 1
+          fi
+          if otool -l "$executable" | rg 'LC_RPATH'; then
+            exit 1
+          fi
+      - name: Audit runtime dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $executable = (Resolve-Path "target/release/examples/create.exe").Path
+          $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+          if (-not $dumpbin) {
+            $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+            $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            if ($LASTEXITCODE -ne 0 -or -not $installation) { throw "MSVC installation not found" }
+            $devcmd = Join-Path $installation "Common7\Tools\VsDevCmd.bat"
+            cmd.exe /s /c "`"$devcmd`" -arch=x64 -host_arch=x64 && dumpbin.exe /DEPENDENTS `"$executable`"" | Tee-Object runtime-dependencies.txt
+          } else {
+            & $dumpbin.Source /DEPENDENTS $executable | Tee-Object runtime-dependencies.txt
+          }
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed" }
+          $forbidden = Select-String -Path runtime-dependencies.txt -Pattern 'scip\.dll|libscip\.dll|soplex\.dll|libsoplex\.dll|libgfortran.*\.dll|ipopt.*\.dll'
+          if ($forbidden) { $forbidden; throw "forbidden runtime solver dependency" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libscip-${{ matrix.target }}
+          path: dist/libscip-${{ matrix.target }}.zip
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: libscip-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify release assets and checksums
+        working-directory: release-assets
+        run: |
+          test "$(find . -maxdepth 1 -name 'libscip-*.zip' | wc -l)" -eq 5
+          sha256sum libscip-*.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Publish immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "release $RELEASE_TAG already exists; refusing to mutate it" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" release-assets/* \
+            --repo "${{ github.repository }}" \
+            --title "$RELEASE_TAG" \
+            --notes "Static SCIP 10.0.2 + SoPlex 8.0.2 bundles for scip-sys."

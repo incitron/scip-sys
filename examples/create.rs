@@ -1,5 +1,5 @@
-use std::ffi::CString;
 use scip_sys::*;
+use std::ffi::CString;
 use std::mem::MaybeUninit;
 
 fn main() {
