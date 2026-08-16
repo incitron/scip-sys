@@ -131,7 +131,9 @@ jobs:
           macos-15,
           macos-14,
           ubuntu-latest,
-          windows-latest,
+          # SCIP 10.0.2 vendors fmt 7.1.3, which does not compile with the
+          # Visual Studio 18 toolchain currently selected by windows-latest.
+          windows-2022,
         ]
     runs-on: ${{ matrix.os }}
     steps:
