@@ -21,7 +21,7 @@ jobs:
         ]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Test bundled
         run: |
           cargo b --no-default-features --features bundled --release
@@ -44,7 +44,7 @@ jobs:
         ]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Test bundled (no bindgen)
         shell: bash
         run: |
@@ -71,7 +71,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [
-          ubuntu-latest,
+          ubuntu-24.04, # Match generate-bindings; system headers affect bindgen output.
           macos-15-intel, # Intel macOS runner
           macos-14, # macOS arm runner
           windows-latest,
@@ -79,7 +79,7 @@ jobs:
         ]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Regenerate and check for drift
         shell: bash
         env:
@@ -117,7 +117,7 @@ jobs:
 #        ]
 #    runs-on: ${{ matrix.os }}
 #    steps:
-#      - uses: actions/checkout@v3
+#      - uses: actions/checkout@v4
 #      - name: Test bundled
 #        run: |
 #          cargo b --features bundled
@@ -137,7 +137,7 @@ jobs:
         ]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Test from-source
         run: |
           cargo b --features from-source -vv
@@ -149,7 +149,7 @@ jobs:
     env:
       SCIP_VERSION: 10.0.2
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install SCIP from debian package
         run: |
@@ -172,9 +172,13 @@ jobs:
   linux-conda-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: conda-incubator/setup-miniconda@v2
+      - uses: actions/checkout@v4
+      - uses: conda-incubator/setup-miniconda@v3
         with:
+          # Ubuntu runners no longer include a preinstalled Conda.
+          miniforge-version: latest
+          channels: conda-forge
+          conda-remove-defaults: "true"
           activate-environment: test
           allow-softlinks: true
 
@@ -199,7 +203,7 @@ jobs:
   linux-lib64-scipoptdir-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Lay out a lib64-style SCIP install from the bundled prebuilt
         run: |
           cargo build --features bundled --release
@@ -224,7 +228,7 @@ jobs:
   linux-lib64-from-source-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Build and test from-source inside a Rocky Linux 10 container
         run: |
           docker run --rm -v "$GITHUB_WORKSPACE:/workspace" -w /workspace rockylinux/rockylinux:10 bash -c '
@@ -240,7 +244,7 @@ jobs:
 #  from-source-linux-arm-test:
 #    runs-on: ubuntu-latest
 #    steps:
-#      - uses: actions/checkout@v3
+#      - uses: actions/checkout@v4
 #
 #      - name: Set up QEMU for ARM64 emulation
 #        uses: docker/setup-qemu-action@v2

@@ -13,7 +13,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Keep system headers consistent with the bindings drift check.
+          - os: ubuntu-24.04
             target: linux
           - os: ubuntu-24.04-arm
             target: linux-arm
